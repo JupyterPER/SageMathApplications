@@ -101,40 +101,287 @@ def sfround(*args, **kwargs):
     kwargs.setdefault("cutoff", 99)
     return sigfig_round(*args, **kwargs)
 
-def budget(gvel, gnames, form = 'final', notation='', transpose = True):
-    indirect = gnames[0]
-    direct = gnames[1:]
-    table = gvel[0].budget(gvel[1:], xnames = direct)
-    Unit = gvel[0].budget(gvel[1:], xnames = direct, uunit='%').df['Unit']
-    if form != 'final':
-        db = table.df.astype(float, errors='ignore')
-        if not 'Unit' in db.columns:
-            db.insert(1r, 'Unit', Unit)
-        db.set_index(['Component'], inplace=True)
-        db = db.reindex(direct+[indirect])
-        db.drop(columns='s', inplace=True)
-        dydx = db['|dy/dx|']
-        db.drop(columns='|dy/dx|', inplace=True)
-        db['rel. u %'] = db['u']/db['Value']*100
-        db['|dy/dx|'] = dydx 
-        db['|dy/dx|.u'] = db['u']*db['|dy/dx|']
-        db['vars'] = (db['u']*db['|dy/dx|'])**2
-        db.loc[indirect,'vars'] = db['vars'].sum() 
-        db.loc[indirect,'|dy/dx|'] = np.float64(1) 
-        db.loc[indirect,'u'] = np.sqrt(db.loc[indirect,'vars'])
-        db.loc[indirect,'rel. u %'] = db.loc[indirect,'u']/db.loc[indirect,'Value']*100
-        db.loc[indirect,'|dy/dx|.u'] = db.loc[indirect,'u']
-        db['rel. vars %'] = db['vars']/db.loc[indirect,'u']**2*100
-        db['s'] = np.sqrt(db['rel. vars %'])/10
-        db.set_index(['Unit'], append=True, inplace=True)
-        if notation == 'decimal':
-            table = db.fillna('').astype(str)
-        elif notation == 'scientific':
-            table = db.map(lambda x: f"{float(x):.2e}" if isinstance(x, (int, float)) else x)
+def budget(gvel, gnames, notation='', transpose=True):
+
+    # ---------------------------------------------------------
+    # Helper for final form:
+    # 2 significant figures, preserving trailing zeros
+    # ---------------------------------------------------------
+
+    def sf2str(x):
+        x = float(x)
+
+        if x == 0:
+            return "0.0"
+
+        # Rounding itself is done by sfround
+        y = float(sfround(x, sigfigs=2))
+
+        exponent = int(np.floor(np.log10(abs(y))))
+
+        # Scientific notation for very small / large values
+        if exponent <= -5 or exponent >= 5:
+            return f"{y:.1e}"
+
+        # Number of decimal places needed for 2 significant figures
+        decimals = 1 - exponent
+
+        if decimals > 0:
+            return f"{y:.{decimals}f}"
+        elif decimals == 0:
+            return f"{y:.1f}"
         else:
-            table = db.fillna('')
-        if transpose:
-            table = table.transpose()
+            return f"{y:.0f}"
+
+
+    # ---------------------------------------------------------
+    # Temporary names
+    #
+    # A = indirect quantity
+    # B, C, D, ... = direct quantities
+    # ---------------------------------------------------------
+
+    letters = list('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+
+    if len(gnames) > len(letters):
+        raise ValueError(
+            "Too many quantities for one-letter auxiliary names."
+        )
+
+    aux_names = letters[:len(gnames)]
+
+    indirect = aux_names[0]       # A
+    direct = aux_names[1:]        # B, C, D, ...
+
+    # temporary name -> original name
+    name_map = dict(zip(aux_names, gnames))
+
+
+    # ---------------------------------------------------------
+    # Initial budget calculation
+    # ---------------------------------------------------------
+
+    table = gvel[0].budget(
+        gvel[1:],
+        xnames=direct
+    )
+
+    Unit = gvel[0].budget(
+        gvel[1:],
+        xnames=direct,
+        uunit='%'
+    ).df['Unit']
+
+
+    # ---------------------------------------------------------
+    # Create uncertainty-budget table
+    # ---------------------------------------------------------
+
+    db = table.df.astype(float, errors='ignore')
+
+    if 'Unit' not in db.columns:
+        db.insert(1, 'Unit', Unit)
+
+
+    # ---------------------------------------------------------
+    # Identify indirect quantity and temporarily rename it A
+    # ---------------------------------------------------------
+
+    components = list(db['Component'])
+
+    indirect_rows = [
+        name for name in components
+        if name not in direct
+    ]
+
+    if len(indirect_rows) != 1:
+        raise ValueError(
+            f"Cannot identify indirect quantity. "
+            f"Components: {components}"
+        )
+
+    indirect_current = indirect_rows[0]
+
+    db['Component'] = db['Component'].replace(
+        indirect_current,
+        indirect
+    )
+
+
+    # ---------------------------------------------------------
+    # Calculations with A, B, C, ...
+    # ---------------------------------------------------------
+
+    db.set_index('Component', inplace=True)
+
+    db = db.reindex(direct + [indirect])
+
+    db.drop(columns='s', inplace=True)
+
+    dydx = db['|dy/dx|']
+    db.drop(columns='|dy/dx|', inplace=True)
+
+    db['rel. u %'] = (
+        db['u'] / db['Value'] * 100
+    )
+
+    db['|dy/dx|'] = dydx
+
+    db['|dy/dx|.u'] = (
+        db['u'] * db['|dy/dx|']
+    )
+
+    db['vars'] = (
+        db['u'] * db['|dy/dx|']
+    )**2
+
+    db.loc[indirect, 'vars'] = db['vars'].sum()
+
+    db.loc[indirect, '|dy/dx|'] = np.float64(1)
+
+    db.loc[indirect, 'u'] = np.sqrt(
+        db.loc[indirect, 'vars']
+    )
+
+    db.loc[indirect, 'rel. u %'] = (
+        db.loc[indirect, 'u']
+        / db.loc[indirect, 'Value']
+        * 100
+    )
+
+    db.loc[indirect, '|dy/dx|.u'] = (
+        db.loc[indirect, 'u']
+    )
+
+    db['rel. vars %'] = (
+        db['vars']
+        / db.loc[indirect, 'u']**2
+        * 100
+    )
+
+    db['s'] = (
+        np.sqrt(db['rel. vars %']) / 10
+    )
+
+
+    # ---------------------------------------------------------
+    # Restore original quantity names
+    # ---------------------------------------------------------
+
+    db.rename(
+        index=name_map,
+        inplace=True
+    )
+
+    db.set_index(
+        'Unit',
+        append=True,
+        inplace=True
+    )
+
+
+    # =========================================================
+    # notation = ''
+    #
+    # FINAL FORM
+    #
+    # Value and u:
+    #   sfround(value, uncertainty=u)
+    #
+    # Everything else:
+    #   sfround(x, sigfigs=2)
+    # =========================================================
+
+    if notation == '':
+
+        table = db.copy().astype(object)
+
+        # Value and uncertainty rounded together
+        for idx in db.index:
+
+            result = sfround(
+                float(db.at[idx, 'Value']),
+                uncertainty=float(db.at[idx, 'u'])
+            )
+
+            value_str, u_str = [
+                x.strip()
+                for x in result.split('±')
+            ]
+
+            table.at[idx, 'Value'] = value_str
+            table.at[idx, 'u'] = u_str
+
+        # Remaining quantities: 2 significant figures
+        for col in db.columns:
+
+            if col not in ['Value', 'u']:
+
+                table[col] = db[col].map(
+                    lambda x:
+                        sf2str(x)
+                        if pd.notna(x)
+                        else ''
+                )
+
+        table = table.fillna('')
+
+
+    # =========================================================
+    # notation = 'decimal'
+    #
+    # Full precision in ordinary decimal notation
+    # =========================================================
+
+    elif notation == 'decimal':
+
+        table = db.map(
+            lambda x:
+                np.format_float_positional(
+                    float(x),
+                    unique=True,
+                    trim='-'
+                )
+                if pd.notna(x)
+                else ''
+        )
+
+
+    # =========================================================
+    # notation = 'scientific'
+    #
+    # Full precision in scientific notation
+    # =========================================================
+
+    elif notation == 'scientific':
+
+        table = db.map(
+            lambda x:
+                np.format_float_scientific(
+                    float(x),
+                    unique=True,
+                    trim='-'
+                )
+                if pd.notna(x)
+                else ''
+        )
+
+
+    else:
+
+        raise ValueError(
+            "notation must be '', 'decimal', or 'scientific'"
+        )
+
+
+    # ---------------------------------------------------------
+    # Transpose
+    # ---------------------------------------------------------
+
+    if transpose:
+        table = table.transpose()
+
+
     return table
 
 def ipyurl(url, storage='google', medium = 'image'):
