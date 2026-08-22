@@ -120,7 +120,7 @@ def budget(gvel, gnames, form = 'final', notation='', transpose = True):
         db['|dy/dx|.u'] = db['u']*db['|dy/dx|']
         db['vars'] = (db['u']*db['|dy/dx|'])**2
         db.loc[indirect,'vars'] = db['vars'].sum() 
-        db.loc[indirect,'|dy/dx|'] = 1 
+        db.loc[indirect,'|dy/dx|'] = np.float64(1) 
         db.loc[indirect,'u'] = np.sqrt(db.loc[indirect,'vars'])
         db.loc[indirect,'rel. u %'] = db.loc[indirect,'u']/db.loc[indirect,'Value']*100
         db.loc[indirect,'|dy/dx|.u'] = db.loc[indirect,'u']
@@ -130,7 +130,7 @@ def budget(gvel, gnames, form = 'final', notation='', transpose = True):
         if notation == 'decimal':
             table = db.fillna('').astype(str)
         elif notation == 'scientific':
-            table = db.applymap(lambda x: f"{float(x):.2e}" if isinstance(x, (int, float)) else x)
+            table = db.map(lambda x: f"{float(x):.2e}" if isinstance(x, (int, float)) else x)
         else:
             table = db.fillna('')
         if transpose:
